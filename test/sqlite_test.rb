@@ -419,6 +419,7 @@ class SQLiteTest < Minitest::Test
         statements = capture_statements { migrate AddForeignKey }
         assert statements.any? { |sql| sql.match?(/\AINSERT INTO "a?users".*SELECT/m) }
         assert_equal 1, connection.foreign_keys(:users).size
+        assert_equal rows, connection.select_rows("SELECT * FROM users ORDER BY id")
         assert_raises(ActiveRecord::InvalidForeignKey) { User.create!(order_id: order_id + 1) }
         statements = capture_statements { migrate AddForeignKey, direction: :down }
         assert statements.any? { |sql| sql.match?(/\AINSERT INTO "a?users".*SELECT/m) }
@@ -442,6 +443,7 @@ class SQLiteTest < Minitest::Test
         statements = capture_statements { migrate AddCheckConstraintName }
         assert statements.any? { |sql| sql.match?(/\AINSERT INTO "a?users".*SELECT/m) }
         assert_equal 1, connection.check_constraints(:users).size
+        assert_equal rows, connection.select_rows("SELECT * FROM users ORDER BY id")
         assert_raises(ActiveRecord::StatementInvalid) { User.create!(credit_score: -1) }
         statements = capture_statements { migrate AddCheckConstraintName, direction: :down }
         assert statements.any? { |sql| sql.match?(/\AINSERT INTO "a?users".*SELECT/m) }
