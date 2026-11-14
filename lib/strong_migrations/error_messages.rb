@@ -207,6 +207,14 @@ class %{migration_name} < ActiveRecord::Migration%{migration_suffix}
   end
 end",
 
+    add_index_sqlite:
+"Adding an index with SQLite can scan all existing rows, even on a table created earlier in this migration.
+SQLite allows only one writer. The write transaction blocks writes throughout the database,
+including unrelated tables, until commit.
+
+For new empty tables, define indexes inside create_table instead of adding them afterward.
+Otherwise, plan a write pause for the index build, then wrap this step in a safety_assured { ... } block.",
+
     remove_index:
 "Removing an index non-concurrently blocks writes. Instead, use:
 
@@ -236,6 +244,14 @@ you're doing is safe before proceeding, then wrap it in a safety_assured { ... }
 "The force option will destroy existing tables.
 If this is intended, drop the existing table first.
 In any case, remove the force option.",
+
+    create_table_sqlite:
+"Using as: or if_not_exists: with SQLite does not guarantee an empty new table.
+Rails can build inline indexes on populated tables with these options.
+SQLite allows only one writer, so copying rows or building indexes can block writes
+throughout the database, including unrelated tables, until commit.
+
+Plan a write pause, then wrap this step in a safety_assured { ... } block.",
 
     execute:
 "Strong Migrations does not support inspecting what happens inside an

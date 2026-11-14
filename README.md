@@ -15,6 +15,11 @@ Changes to column types, defaults, and nullability are also rejected because Rai
 including when dropping NOT NULL or changing the default of a newly added column.
 Foreign key and check constraint additions and removals require acknowledgement for table rebuilds.
 For new tables, declare constraints inside `create_table` to avoid a later rebuild.
+Explicit index additions require acknowledgement even on tables created earlier in the migration:
+SQLite's single writer can block writes to unrelated tables until commit.
+Indexes declared inside ordinary empty `create_table` and `create_join_table` operations are permitted.
+SQLite table creation with `as:` or `if_not_exists: true` requires acknowledgement,
+since inline indexes may be built on populated tables.
 `safe_by_default` does not rewrite SQLite operations. Timeout settings, lock-timeout retries,
 and `auto_analyze` are not supported for SQLite.
 

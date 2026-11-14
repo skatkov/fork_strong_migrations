@@ -166,6 +166,8 @@ module StrongMigrations
         raise_error :add_index_columns, header: "Best practice"
       end
 
+      raise_error :add_index_sqlite if sqlite?
+
       # safe_by_default goes through this path as well
       if postgresql? && options[:algorithm] == :concurrently && adapter.index_corruption?
         raise_error :add_index_corruption
@@ -416,9 +418,7 @@ module StrongMigrations
     end
 
     def check_create_join_table(*args)
-      options = args.extract_options!
-
-      raise_error :create_table if options[:force]
+      check_create_table_options(args.extract_options!)
 
       # TODO keep track of new table of add_index check
     end
@@ -427,10 +427,15 @@ module StrongMigrations
       options = args.extract_options!
       table, _ = args
 
-      raise_error :create_table if options[:force]
+      check_create_table_options(options)
 
       # keep track of new table of add_index check
       @new_tables << table.to_s
+    end
+
+    def check_create_table_options(options)
+      raise_error :create_table if options[:force]
+      raise_error :create_table_sqlite if sqlite? && (options[:as] || options[:if_not_exists])
     end
 
     def check_execute

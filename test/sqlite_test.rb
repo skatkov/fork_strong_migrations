@@ -493,7 +493,166 @@ class SQLiteTest < Minitest::Test
     with_safety_assured { migrate AddForeignKey, direction: :down } if ActiveRecord::Base.connection.foreign_keys(:users).any?
   end
 
+  def test_add_index
+    assert_index_rejected AddIndex
+  end
+
+  def test_add_unique_index
+    assert_index_rejected AddIndexUnique
+  end
+
+  def test_index_message
+    error = assert_raises(StrongMigrations::UnsafeMigration) { migrate AddIndex }
+    assert_match "unrelated tables", error.message
+    assert_match "until commit", error.message
+    assert_match "write pause", error.message
+    assert_match "safety_assured", error.message
+    refute_match "algorithm:", error.message
+  ensure
+    ActiveRecord::Base.connection.remove_index(:users, :name) if ActiveRecord::Base.connection.index_exists?(:users, :name)
+  end
+
+  def test_add_index_new_table
+    [AddIndexNewTable, AddIndexPopulatedNewTable].each do |migration|
+      statements = capture_statements { assert_unsafe migration, "index" }
+      assert statements.any? { |sql| sql.start_with?('CREATE TABLE "new_users"') }
+      if migration == AddIndexPopulatedNewTable
+        assert statements.any? { |sql| sql.start_with?("INSERT INTO new_users") }
+      end
+      assert_empty statements.grep(/\ACREATE (?:UNIQUE )?INDEX\b/)
+      refute ActiveRecord::Base.connection.table_exists?(:new_users)
+    end
+  ensure
+    ActiveRecord::Base.connection.drop_table(:new_users, if_exists: true)
+  end
+
+  def test_inline_index
+    migrate CreateTableInlineIndex
+    assert ActiveRecord::Base.connection.index_exists?(:new_users, :name, unique: true)
+    migrate CreateTableInlineIndex, direction: :down
+    migrate CreateJoinTableInlineIndex
+    assert ActiveRecord::Base.connection.index_exists?(:cities_users, :user_id)
+    migrate CreateJoinTableInlineIndex, direction: :down
+  ensure
+    ActiveRecord::Base.connection.drop_table(:new_users, if_exists: true)
+    ActiveRecord::Base.connection.drop_table(:cities_users, if_exists: true)
+  end
+
+  def test_inline_index_on_potentially_populated_table
+    User.create!(name: "Existing")
+    [CreateTableAsInlineIndex, CreateTableIfNotExistsInlineIndex,
+      CreateJoinTableAsInlineIndex, CreateJoinTableIfNotExistsInlineIndex].each do |migration|
+      statements = capture_statements { assert_unsafe migration, "as: or if_not_exists:" }
+      assert_empty statements.grep(/\A(?:CREATE|ALTER|DROP)\b/)
+      refute ActiveRecord::Base.connection.index_exists?(:users, :name)
+      assert_equal ["Existing"], User.pluck(:name)
+    end
+  ensure
+    User.delete_all
+    ActiveRecord::Base.connection.remove_index(:users, :name) if ActiveRecord::Base.connection.index_exists?(:users, :name)
+    ActiveRecord::Base.connection.drop_table(:new_users, if_exists: true)
+    ActiveRecord::Base.connection.drop_table(:cities_users, if_exists: true)
+  end
+
+  def test_populated_inline_index_safety_assured
+    User.create!(name: "Existing")
+    with_safety_assured do
+      migrate CreateTableAsInlineIndex
+      assert ActiveRecord::Base.connection.index_exists?(:new_users, :name)
+      assert_equal [["Existing"]], ActiveRecord::Base.connection.select_rows("SELECT name FROM new_users")
+      migrate CreateTableAsInlineIndex, direction: :down
+      migrate CreateTableIfNotExistsInlineIndex
+      assert ActiveRecord::Base.connection.index_exists?(:users, :name)
+      assert_equal ["Existing"], User.pluck(:name)
+    end
+  ensure
+    ActiveRecord::Base.connection.remove_index(:users, :name) if ActiveRecord::Base.connection.index_exists?(:users, :name)
+    ActiveRecord::Base.connection.drop_table(:new_users, if_exists: true)
+    User.delete_all
+  end
+
+  def test_index_safety_assured
+    with_option(:safe_by_default, true) do
+      with_safety_assured { assert_index_round_trip }
+    end
+  end
+
+  def test_index_safe_by_default
+    with_option(:safe_by_default, true) { assert_index_rejected AddIndex }
+  end
+
+  def test_disabled_index_check
+    with_option(:enabled_checks, StrongMigrations.enabled_checks.except(:add_index_sqlite)) do
+      with_option(:safe_by_default, true) { assert_index_round_trip }
+      assert_unsafe AddIndexColumns, "Best practice"
+    end
+  end
+
+  def test_disabled_index_columns_check
+    with_option(:enabled_checks, StrongMigrations.enabled_checks.except(:add_index_columns)) do
+      assert_index_rejected AddIndexColumns
+    end
+  end
+
+  def test_disabled_create_table_sqlite_check
+    with_option(:enabled_checks, StrongMigrations.enabled_checks.except(:create_table_sqlite)) do
+      assert migrate(CreateTableAsInlineIndex)
+      assert ActiveRecord::Base.connection.index_exists?(:new_users, :name)
+    end
+  ensure
+    ActiveRecord::Base.connection.drop_table(:new_users, if_exists: true)
+  end
+
+  def test_index_start_after
+    with_start_after(123) { assert_index_round_trip }
+  end
+
+  def test_index_skipped_database
+    with_option(:skipped_databases, ["primary"]) { assert_index_round_trip }
+  end
+
+  def test_index_check_down
+    with_option(:check_down, true) do
+      assert_index_rejected RemoveIndex, direction: :down
+      with_safety_assured { assert migrate(RemoveIndex, direction: :down) }
+      assert migrate(AddIndex, direction: :down)
+    end
+  ensure
+    ActiveRecord::Base.connection.remove_index(:users, :name) if ActiveRecord::Base.connection.index_exists?(:users, :name)
+  end
+
   private
+
+  def assert_index_rejected(migration, **options)
+    connection = ActiveRecord::Base.connection
+    indexes = connection.indexes(:users).map(&:name)
+    User.create!(name: "Existing")
+    rows = connection.select_rows("SELECT * FROM users ORDER BY id")
+    statements = capture_statements { assert_unsafe migration, "index", **options }
+    assert_empty statements.grep(/\ACREATE (?:UNIQUE )?INDEX\b/)
+    assert_equal indexes, connection.indexes(:users).map(&:name)
+    assert_equal rows, connection.select_rows("SELECT * FROM users ORDER BY id")
+  ensure
+    if connection && indexes
+      (connection.indexes(:users).map(&:name) - indexes).each { |name| connection.remove_index(:users, name: name) }
+    end
+    User.delete_all
+  end
+
+  def assert_index_round_trip
+    User.create!(name: "Existing")
+    connection = ActiveRecord::Base.connection
+    rows = connection.select_rows("SELECT * FROM users ORDER BY id")
+    statements = capture_statements { migrate AddIndexUnique }
+    assert statements.any? { |sql| sql.start_with?("CREATE UNIQUE INDEX") }
+    assert connection.index_exists?(:users, :name, unique: true)
+    assert_equal rows, connection.select_rows("SELECT * FROM users ORDER BY id")
+    migrate AddIndexUnique, direction: :down
+    refute connection.index_exists?(:users, :name)
+  ensure
+    connection.remove_index(:users, :name) if connection&.index_exists?(:users, :name)
+    User.delete_all
+  end
 
   def assert_new_table_constraint_rejected(migration)
     statements = capture_statements { assert_unsafe migration, "rebuild" }
