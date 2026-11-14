@@ -227,22 +227,22 @@ class SQLiteTest < Minitest::Test
   end
 
   def test_change_column
-    assert_rebuild_rejected ChangeColumnVarcharToText
+    assert_table_change_rejected ChangeColumnVarcharToText
   end
 
   def test_change_column_same_type
-    assert_rebuild_rejected ChangeColumnSameType
+    assert_table_change_rejected ChangeColumnSameType
   end
 
   def test_change_column_default
     with_partial_inserts(false) do
-      assert_rebuild_rejected ChangeColumnDefault
+      assert_table_change_rejected ChangeColumnDefault
     end
   end
 
   def test_change_column_default_hash
     with_partial_inserts(false) do
-      assert_rebuild_rejected ChangeColumnDefaultHash
+      assert_table_change_rejected ChangeColumnDefaultHash
     end
   end
 
@@ -255,31 +255,31 @@ class SQLiteTest < Minitest::Test
   end
 
   def test_change_column_null
-    assert_rebuild_rejected ChangeColumnNull
+    assert_table_change_rejected ChangeColumnNull
   end
 
   def test_change_column_allow_null
     with_safety_assured { migrate ChangeColumnNull }
-    assert_rebuild_rejected ChangeColumnAllowNull
+    assert_table_change_rejected ChangeColumnAllowNull
   ensure
     migrate ChangeColumnNull, direction: :down
   end
 
   def test_change_column_null_default
     User.create!(name: nil)
-    assert_rebuild_rejected ChangeColumnNullDefault
+    assert_table_change_rejected ChangeColumnNullDefault
   end
 
   def test_change_column_safe_by_default
     with_option(:safe_by_default, true) do
-      assert_rebuild_rejected ChangeColumnNullDefault
+      assert_table_change_rejected ChangeColumnNullDefault
     end
   end
 
   def test_change_column_down
     with_safety_assured { migrate ChangeColumnDefaultHash }
     with_option(:check_down, true) do
-      assert_rebuild_rejected ChangeColumnDefaultHash, direction: :down
+      assert_table_change_rejected ChangeColumnDefaultHash, direction: :down
     end
   ensure
     migrate ChangeColumnDefaultHash, direction: :down
@@ -334,7 +334,7 @@ class SQLiteTest < Minitest::Test
   def test_disabled_change_column_check_preserves_partial_inserts_check
     with_option(:enabled_checks, StrongMigrations.enabled_checks.except(:change_column_sqlite)) do
       with_partial_inserts(true) do
-        assert_rebuild_rejected ChangeColumnDefaultHash, "partial_inserts"
+        assert_table_change_rejected ChangeColumnDefaultHash, "partial_inserts"
       end
     end
   end
@@ -359,31 +359,31 @@ class SQLiteTest < Minitest::Test
   end
 
   def test_add_foreign_key
-    assert_rebuild_rejected AddForeignKey
+    assert_table_change_rejected AddForeignKey
   end
 
   def test_add_foreign_key_validate_false
-    assert_rebuild_rejected AddForeignKeySafe
+    assert_table_change_rejected AddForeignKeySafe
   end
 
   def test_add_check_constraint
-    assert_rebuild_rejected AddCheckConstraint
+    assert_table_change_rejected AddCheckConstraint
   end
 
   def test_add_check_constraint_validate_false
-    assert_rebuild_rejected AddCheckConstraintSafe
+    assert_table_change_rejected AddCheckConstraintSafe
   end
 
   def test_remove_foreign_key
     with_safety_assured { migrate AddForeignKey }
-    assert_rebuild_rejected RemoveForeignKey
+    assert_table_change_rejected RemoveForeignKey
   ensure
     with_safety_assured { migrate AddForeignKey, direction: :down } if ActiveRecord::Base.connection.foreign_keys(:users).any?
   end
 
   def test_remove_check_constraint
     with_safety_assured { migrate AddCheckConstraintName }
-    assert_rebuild_rejected RemoveCheckConstraint
+    assert_table_change_rejected RemoveCheckConstraint
   ensure
     with_safety_assured { migrate AddCheckConstraintName, direction: :down } if ActiveRecord::Base.connection.check_constraints(:users).any?
   end
@@ -479,26 +479,26 @@ class SQLiteTest < Minitest::Test
 
   def test_constraint_safe_by_default
     with_option(:safe_by_default, true) do
-      assert_rebuild_rejected AddForeignKeySafe
-      assert_rebuild_rejected AddCheckConstraintSafe
+      assert_table_change_rejected AddForeignKeySafe
+      assert_table_change_rejected AddCheckConstraintSafe
     end
   end
 
   def test_constraint_check_down
     with_safety_assured { migrate AddForeignKey }
     with_option(:check_down, true) do
-      assert_rebuild_rejected AddForeignKey, direction: :down
+      assert_table_change_rejected AddForeignKey, direction: :down
     end
   ensure
     with_safety_assured { migrate AddForeignKey, direction: :down } if ActiveRecord::Base.connection.foreign_keys(:users).any?
   end
 
   def test_add_index
-    assert_index_rejected AddIndex
+    assert_table_change_rejected AddIndex, "index"
   end
 
   def test_add_unique_index
-    assert_index_rejected AddIndexUnique
+    assert_table_change_rejected AddIndexUnique, "index"
   end
 
   def test_index_message
@@ -578,7 +578,7 @@ class SQLiteTest < Minitest::Test
   end
 
   def test_index_safe_by_default
-    with_option(:safe_by_default, true) { assert_index_rejected AddIndex }
+    with_option(:safe_by_default, true) { assert_table_change_rejected AddIndex, "index" }
   end
 
   def test_disabled_index_check
@@ -590,7 +590,7 @@ class SQLiteTest < Minitest::Test
 
   def test_disabled_index_columns_check
     with_option(:enabled_checks, StrongMigrations.enabled_checks.except(:add_index_columns)) do
-      assert_index_rejected AddIndexColumns
+      assert_table_change_rejected AddIndexColumns, "index"
     end
   end
 
@@ -613,7 +613,7 @@ class SQLiteTest < Minitest::Test
 
   def test_index_check_down
     with_option(:check_down, true) do
-      assert_index_rejected RemoveIndex, direction: :down
+      assert_table_change_rejected RemoveIndex, "index", direction: :down
       with_safety_assured { assert migrate(RemoveIndex, direction: :down) }
       assert migrate(AddIndex, direction: :down)
     end
@@ -622,22 +622,6 @@ class SQLiteTest < Minitest::Test
   end
 
   private
-
-  def assert_index_rejected(migration, **options)
-    connection = ActiveRecord::Base.connection
-    indexes = connection.indexes(:users).map(&:name)
-    User.create!(name: "Existing")
-    rows = connection.select_rows("SELECT * FROM users ORDER BY id")
-    statements = capture_statements { assert_unsafe migration, "index", **options }
-    assert_empty statements.grep(/\ACREATE (?:UNIQUE )?INDEX\b/)
-    assert_equal indexes, connection.indexes(:users).map(&:name)
-    assert_equal rows, connection.select_rows("SELECT * FROM users ORDER BY id")
-  ensure
-    if connection && indexes
-      (connection.indexes(:users).map(&:name) - indexes).each { |name| connection.remove_index(:users, name: name) }
-    end
-    User.delete_all
-  end
 
   def assert_index_round_trip
     User.create!(name: "Existing")
@@ -676,17 +660,22 @@ class SQLiteTest < Minitest::Test
     User.delete_all
   end
 
-  def assert_rebuild_rejected(migration, message = "rebuild", **options)
+  def assert_table_change_rejected(migration, message = "rebuild", **options)
     User.create!(name: "Existing")
     connection = ActiveRecord::Base.connection
     schema_sql = "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'users'"
     schema = connection.select_value(schema_sql)
+    indexes = connection.indexes(:users).map(&:name)
     rows = connection.select_rows("SELECT * FROM users ORDER BY id")
     statements = capture_statements { assert_unsafe migration, message, **options }
     assert_empty statements.grep(/\A(?:ALTER|CREATE|DROP|INSERT|UPDATE|DELETE)\b.*"a?users"/m)
     assert_equal schema, connection.select_value(schema_sql)
+    assert_equal indexes, connection.indexes(:users).map(&:name)
     assert_equal rows, connection.select_rows("SELECT * FROM users ORDER BY id")
   ensure
+    if connection && indexes
+      (connection.indexes(:users).map(&:name) - indexes).each { |name| connection.remove_index(:users, name: name) }
+    end
     User.delete_all
   end
 
