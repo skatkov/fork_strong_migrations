@@ -73,6 +73,8 @@ module StrongMigrations
           check_create_table(*args)
         when :execute
           check_execute
+        when :remove_check_constraint, :remove_foreign_key
+          check_remove_constraint(method)
         when :remove_column, :remove_columns, :remove_timestamps, :remove_reference, :remove_belongs_to
           check_remove_column(method, *args)
         when :remove_index

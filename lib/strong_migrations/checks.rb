@@ -4,6 +4,8 @@ module StrongMigrations
     private
 
     def check_add_check_constraint(*args)
+      return raise_error(:constraint_sqlite, operation: "add_check_constraint") if sqlite?
+
       options = args.extract_options!
       table, expression = args
 
@@ -133,6 +135,8 @@ module StrongMigrations
     # note: adding foreign_keys with create_table is fine
     # since the table is always guaranteed to be empty
     def check_add_foreign_key(*args)
+      return raise_error(:constraint_sqlite, operation: "add_foreign_key") if sqlite?
+
       options = args.extract_options!
       from_table, to_table = args
 
@@ -431,6 +435,10 @@ module StrongMigrations
 
     def check_execute
       raise_error :execute, header: "Possibly dangerous operation"
+    end
+
+    def check_remove_constraint(method)
+      raise_error :constraint_sqlite, operation: method if sqlite?
     end
 
     # supports algorithm and lock options, but always raises

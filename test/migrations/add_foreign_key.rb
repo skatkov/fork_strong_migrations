@@ -4,6 +4,15 @@ class AddForeignKey < TestMigration
   end
 end
 
+class AddForeignKeyNewTable < TestMigration
+  def change
+    create_table :new_users do |t|
+      t.references :order, index: false
+    end
+    add_foreign_key :new_users, :orders
+  end
+end
+
 class AddForeignKeySafe < TestMigration
   def change
     add_foreign_key :users, :orders, validate: false

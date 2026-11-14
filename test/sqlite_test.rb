@@ -227,22 +227,22 @@ class SQLiteTest < Minitest::Test
   end
 
   def test_change_column
-    assert_column_change_rejected ChangeColumnVarcharToText
+    assert_rebuild_rejected ChangeColumnVarcharToText
   end
 
   def test_change_column_same_type
-    assert_column_change_rejected ChangeColumnSameType
+    assert_rebuild_rejected ChangeColumnSameType
   end
 
   def test_change_column_default
     with_partial_inserts(false) do
-      assert_column_change_rejected ChangeColumnDefault
+      assert_rebuild_rejected ChangeColumnDefault
     end
   end
 
   def test_change_column_default_hash
     with_partial_inserts(false) do
-      assert_column_change_rejected ChangeColumnDefaultHash
+      assert_rebuild_rejected ChangeColumnDefaultHash
     end
   end
 
@@ -255,31 +255,31 @@ class SQLiteTest < Minitest::Test
   end
 
   def test_change_column_null
-    assert_column_change_rejected ChangeColumnNull
+    assert_rebuild_rejected ChangeColumnNull
   end
 
   def test_change_column_allow_null
     with_safety_assured { migrate ChangeColumnNull }
-    assert_column_change_rejected ChangeColumnAllowNull
+    assert_rebuild_rejected ChangeColumnAllowNull
   ensure
     migrate ChangeColumnNull, direction: :down
   end
 
   def test_change_column_null_default
     User.create!(name: nil)
-    assert_column_change_rejected ChangeColumnNullDefault
+    assert_rebuild_rejected ChangeColumnNullDefault
   end
 
   def test_change_column_safe_by_default
     with_option(:safe_by_default, true) do
-      assert_column_change_rejected ChangeColumnNullDefault
+      assert_rebuild_rejected ChangeColumnNullDefault
     end
   end
 
   def test_change_column_down
     with_safety_assured { migrate ChangeColumnDefaultHash }
     with_option(:check_down, true) do
-      assert_column_change_rejected ChangeColumnDefaultHash, direction: :down
+      assert_rebuild_rejected ChangeColumnDefaultHash, direction: :down
     end
   ensure
     migrate ChangeColumnDefaultHash, direction: :down
@@ -334,7 +334,7 @@ class SQLiteTest < Minitest::Test
   def test_disabled_change_column_check_preserves_partial_inserts_check
     with_option(:enabled_checks, StrongMigrations.enabled_checks.except(:change_column_sqlite)) do
       with_partial_inserts(true) do
-        assert_column_change_rejected ChangeColumnDefaultHash, "partial_inserts"
+        assert_rebuild_rejected ChangeColumnDefaultHash, "partial_inserts"
       end
     end
   end
@@ -358,7 +358,150 @@ class SQLiteTest < Minitest::Test
     end
   end
 
+  def test_add_foreign_key
+    assert_rebuild_rejected AddForeignKey
+  end
+
+  def test_add_foreign_key_validate_false
+    assert_rebuild_rejected AddForeignKeySafe
+  end
+
+  def test_add_check_constraint
+    assert_rebuild_rejected AddCheckConstraint
+  end
+
+  def test_add_check_constraint_validate_false
+    assert_rebuild_rejected AddCheckConstraintSafe
+  end
+
+  def test_remove_foreign_key
+    with_safety_assured { migrate AddForeignKey }
+    assert_rebuild_rejected RemoveForeignKey
+  ensure
+    with_safety_assured { migrate AddForeignKey, direction: :down } if ActiveRecord::Base.connection.foreign_keys(:users).any?
+  end
+
+  def test_remove_check_constraint
+    with_safety_assured { migrate AddCheckConstraintName }
+    assert_rebuild_rejected RemoveCheckConstraint
+  ensure
+    with_safety_assured { migrate AddCheckConstraintName, direction: :down } if ActiveRecord::Base.connection.check_constraints(:users).any?
+  end
+
+  def test_add_foreign_key_new_table
+    assert_new_table_constraint_rejected AddForeignKeyNewTable
+  end
+
+  def test_add_check_constraint_new_table
+    assert_new_table_constraint_rejected AddCheckConstraintNewTable
+  end
+
+  def test_inline_constraints
+    statements = capture_statements { migrate CreateTableInlineConstraints }
+    writes = statements.grep(/\A(?:ALTER|CREATE|DROP|INSERT|UPDATE|DELETE)\b.*"a?new_users"/m)
+    assert_equal 1, writes.size
+    assert_match(/\ACREATE TABLE "new_users"/, writes.first)
+    assert_equal 1, ActiveRecord::Base.connection.foreign_keys(:new_users).size
+    assert_equal 1, ActiveRecord::Base.connection.check_constraints(:new_users).size
+    migrate CreateTableInlineConstraints, direction: :down
+    refute ActiveRecord::Base.connection.table_exists?(:new_users)
+  ensure
+    migrate CreateTableInlineConstraints, direction: :down if ActiveRecord::Base.connection.table_exists?(:new_users)
+  end
+
+  def test_foreign_key_safety_assured
+    connection = ActiveRecord::Base.connection
+    order_id = connection.insert('INSERT INTO "orders" DEFAULT VALUES')
+    User.create!(name: "Existing", order_id: order_id)
+    rows = connection.select_rows("SELECT * FROM users ORDER BY id")
+    with_option(:check_down, true) do
+      with_safety_assured do
+        statements = capture_statements { migrate AddForeignKey }
+        assert statements.any? { |sql| sql.match?(/\AINSERT INTO "a?users".*SELECT/m) }
+        assert_equal 1, connection.foreign_keys(:users).size
+        assert_raises(ActiveRecord::InvalidForeignKey) { User.create!(order_id: order_id + 1) }
+        statements = capture_statements { migrate AddForeignKey, direction: :down }
+        assert statements.any? { |sql| sql.match?(/\AINSERT INTO "a?users".*SELECT/m) }
+        assert_empty connection.foreign_keys(:users)
+        assert_equal rows, connection.select_rows("SELECT * FROM users ORDER BY id")
+        User.create!(order_id: order_id + 1)
+      end
+    end
+  ensure
+    User.delete_all
+    with_safety_assured { migrate AddForeignKey, direction: :down } if connection && connection.foreign_keys(:users).any?
+    connection.execute('DELETE FROM "orders"') if connection
+  end
+
+  def test_check_constraint_safety_assured
+    User.create!(name: "Existing", credit_score: 1)
+    connection = ActiveRecord::Base.connection
+    rows = connection.select_rows("SELECT * FROM users ORDER BY id")
+    with_option(:check_down, true) do
+      with_safety_assured do
+        statements = capture_statements { migrate AddCheckConstraintName }
+        assert statements.any? { |sql| sql.match?(/\AINSERT INTO "a?users".*SELECT/m) }
+        assert_equal 1, connection.check_constraints(:users).size
+        assert_raises(ActiveRecord::StatementInvalid) { User.create!(credit_score: -1) }
+        statements = capture_statements { migrate AddCheckConstraintName, direction: :down }
+        assert statements.any? { |sql| sql.match?(/\AINSERT INTO "a?users".*SELECT/m) }
+        assert_empty connection.check_constraints(:users)
+        assert_equal rows, connection.select_rows("SELECT * FROM users ORDER BY id")
+        User.create!(credit_score: -1)
+      end
+    end
+  ensure
+    User.delete_all
+    with_safety_assured { migrate AddCheckConstraintName, direction: :down } if connection && connection.check_constraints(:users).any?
+  end
+
+  def test_disabled_constraint_check
+    with_option(:enabled_checks, StrongMigrations.enabled_checks.except(:constraint_sqlite)) do
+      with_option(:safe_by_default, true) do
+        migrate AddForeignKeySafe
+        assert_equal 1, ActiveRecord::Base.connection.foreign_keys(:users).size
+        migrate RemoveForeignKey
+        assert_empty ActiveRecord::Base.connection.foreign_keys(:users)
+        migrate AddCheckConstraintSafe
+        assert_equal 1, ActiveRecord::Base.connection.check_constraints(:users).size
+        migrate RemoveCheckConstraint
+        assert_empty ActiveRecord::Base.connection.check_constraints(:users)
+      end
+    end
+  ensure
+    with_safety_assured do
+      migrate RemoveForeignKey if ActiveRecord::Base.connection.foreign_keys(:users).any?
+      migrate RemoveCheckConstraint if ActiveRecord::Base.connection.check_constraints(:users).any?
+    end
+  end
+
+  def test_constraint_safe_by_default
+    with_option(:safe_by_default, true) do
+      assert_rebuild_rejected AddForeignKeySafe
+      assert_rebuild_rejected AddCheckConstraintSafe
+    end
+  end
+
+  def test_constraint_check_down
+    with_safety_assured { migrate AddForeignKey }
+    with_option(:check_down, true) do
+      assert_rebuild_rejected AddForeignKey, direction: :down
+    end
+  ensure
+    with_safety_assured { migrate AddForeignKey, direction: :down } if ActiveRecord::Base.connection.foreign_keys(:users).any?
+  end
+
   private
+
+  def assert_new_table_constraint_rejected(migration)
+    statements = capture_statements { assert_unsafe migration, "rebuild" }
+    writes = statements.grep(/\A(?:ALTER|CREATE|DROP|INSERT|UPDATE|DELETE)\b.*"a?new_users"/m)
+    assert_equal 1, writes.size
+    assert_match(/\ACREATE TABLE "new_users"/, writes.first)
+    refute ActiveRecord::Base.connection.table_exists?(:new_users)
+  ensure
+    migrate migration, direction: :down if ActiveRecord::Base.connection.table_exists?(:new_users)
+  end
 
   def assert_column_change_rebuild(migration, names)
     names.each { |name| User.create!(name: name) }
@@ -372,7 +515,7 @@ class SQLiteTest < Minitest::Test
     User.delete_all
   end
 
-  def assert_column_change_rejected(migration, message = "rebuild", **options)
+  def assert_rebuild_rejected(migration, message = "rebuild", **options)
     User.create!(name: "Existing")
     connection = ActiveRecord::Base.connection
     schema_sql = "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'users'"

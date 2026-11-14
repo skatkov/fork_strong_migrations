@@ -13,6 +13,8 @@ Column additions that rebuild the table are rejected. Callable defaults and colu
 that may hide rebuilds or validation scans require explicit acknowledgement.
 Changes to column types, defaults, and nullability are also rejected because Rails rebuilds the table,
 including when dropping NOT NULL or changing the default of a newly added column.
+Foreign key and check constraint additions and removals require acknowledgement for table rebuilds.
+For new tables, declare constraints inside `create_table` to avoid a later rebuild.
 `safe_by_default` does not rewrite SQLite operations. Timeout settings, lock-timeout retries,
 and `auto_analyze` are not supported for SQLite.
 

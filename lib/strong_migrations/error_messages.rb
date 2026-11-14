@@ -322,6 +322,14 @@ end",
 "Validating a foreign key while writes are blocked is dangerous.
 Use disable_ddl_transaction! or a separate migration.",
 
+    constraint_sqlite:
+"Using %{operation} with SQLite can rebuild the table, copying all existing rows.
+The write transaction blocks writes throughout the database, including unrelated tables, until commit.
+For additions, validate: false does not avoid the SQLite rebuild.
+
+For new tables, define constraints inside create_table instead of adding them afterward.
+Otherwise, plan a write pause for the rebuild, then wrap this step in a safety_assured { ... } block.",
+
     add_check_constraint:
 "Adding a check constraint key blocks reads and writes while every row is checked.
 Instead, add the check constraint without validating existing rows,
